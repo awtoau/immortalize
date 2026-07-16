@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.13t", "3.14", "3.14t"]
+        include:
+          # 3.15 is prerelease: informational rows, allowed to fail
+          - os: ubuntu-latest
+            python-version: "3.15"
+            experimental: true
+          - os: ubuntu-latest
+            python-version: "3.15t"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+      - name: Report interpreter mode
+        run: |
+          python -c "import sys, immortalize as im; print(sys.version); print('available:', im.available(), 'free_threaded:', im.is_free_threaded())"
+      - name: Assert symbol is exported (Linux)
+        # Guard against the whole suite silently skipping: hosted Linux
+        # CPython builds export _Py_SetImmortal; if that ever changes we want
+        # a red build, not a green no-op.  (Windows/macOS export behaviour is
+        # informational for now -- tests skip gracefully there if absent.)
+        if: runner.os == 'Linux'
+        run: |
+          python -c "import immortalize as im; assert im.available(), 'symbol not exported on this build'"
+      - name: Test
+        run: python -m pytest tests/ -v
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
