@@ -205,3 +205,123 @@ def test_immortal_survives_del_and_gc():
     # tricks; the meaningful invariant is that del+collect neither crashed
     # nor raised.  (Immortals are never deallocated by design.)
     assert isinstance(ref, int)
+
+
+# ---- v0.2 diagnostics & guardrails ------------------------------------------
+
+needs_ft = pytest.mark.skipif(
+    not (im.available() and im.is_free_threaded()),
+    reason="needs a free-threaded build exporting _Py_SetImmortal")
+
+
+def test_probe_unsupported_reports_cleanly(monkeypatch):
+    if im.is_free_threaded():
+        pytest.skip("only meaningful on non-free-threaded builds")
+    r = im.probe({"a": 1})
+    assert r["supported"] is False
+    assert "reason" in r
+
+
+@needs_ft
+def test_probe_cold_then_foreign_touched():
+    import threading
+    # runtime-built strings and LARGE ints only: compile-time constants,
+    # single-char strings, and the static small-int cache (which reaches 1024
+    # on 3.15t) are pre-immortalized and would pollute the "cold" baseline.
+    cold = {"key%d" % i: ["val%d" % i, i + 10_000] for i in range(50)}
+    r0 = im.probe(cold)
+    assert r0["supported"] and r0["objects_sampled"] > 0
+    assert r0["shared_evidence"] == 0
+    assert r0["immortal"] == 0
+
+    hold, release = threading.Event(), threading.Event()
+
+    def toucher():
+        grabbed = [v for v in cold.values()]
+        hold.set()
+        release.wait()
+        del grabbed
+
+    t = threading.Thread(target=toucher)
+    t.start(); hold.wait()
+    r1 = im.probe(cold)
+    release.set(); t.join()
+    assert r1["shared_evidence"] > 0
+    assert r1["shared_evidence_fraction"] > 0
+
+    im.immortalize_tree(cold)
+    r2 = im.probe(cold)
+    assert r2["immortal"] == r2["objects_sampled"]
+    assert r2["immortal_fraction"] == 1.0
+
+
+@needs_symbol
+def test_strict_refuses_generator_and_freezes_nothing():
+    gen = (x for x in range(3))
+    root = {"gen": gen, "data": ["untouched"]}
+    with pytest.raises(im.UnsafeToImmortalize) as exc:
+        im.immortalize_tree(root, strict=True)
+    assert "generator" in str(exc.value)
+    assert not im.is_immortal(root)
+    assert not im.is_immortal(root["data"])
+
+
+@needs_symbol
+def test_strict_refuses_open_file(tmp_path):
+    f = open(tmp_path / "x.txt", "w")
+    try:
+        root = [f, ["sibling"]]
+        with pytest.raises(im.UnsafeToImmortalize):
+            im.immortalize_tree(root, strict=True)
+        assert not im.is_immortal(root)
+    finally:
+        f.close()
+
+
+@needs_symbol
+def test_strict_refuses_lock_and_del():
+    import threading
+
+    class WithDel:
+        def __del__(self):
+            pass
+
+    with pytest.raises(im.UnsafeToImmortalize) as exc:
+        im.immortalize_tree({"l": threading.Lock()}, strict=True)
+    assert "lock" in str(exc.value)
+    with pytest.raises(im.UnsafeToImmortalize) as exc:
+        im.immortalize_tree({"d": WithDel()}, strict=True)
+    assert "__del__" in str(exc.value)
+
+
+@needs_symbol
+def test_strict_passes_clean_structure():
+    root = {"a": [1, 2.5, "s"], "b": ("t",)}
+    n = im.immortalize_tree(root, strict=True)
+    assert n > 0
+    assert im.is_immortal(root)
+
+
+@needs_symbol
+def test_stats_counts_calls_and_objects():
+    before = im.stats()
+    im.immortalize_tree(["counted", 1])
+    after = im.stats()
+    assert after["tree_calls"] == before["tree_calls"] + 1
+    assert after["objects_frozen"] > before["objects_frozen"]
+    assert any("test_immortalize" in site for site in after["call_sites"])
+
+
+@needs_symbol
+def test_repeat_call_site_warns():
+    saved = im.repeat_call_warning
+    im.repeat_call_warning = 3
+    try:
+        def freeze_once():
+            im.immortalize_tree(["leak", "leak"])   # one call site
+        freeze_once()
+        freeze_once()
+        with pytest.warns(ResourceWarning, match="per-iteration"):
+            freeze_once()
+    finally:
+        im.repeat_call_warning = saved

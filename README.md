@@ -183,6 +183,74 @@ immortalize.is_immortal(obj) -> bool
     # refcount-threshold heuristic on 3.12/3.13).
 ```
 
+## Diagnostics & guardrails
+
+All zero-cost unless you invoke them.
+
+**`probe(root)` — "is this structure actually shared?" for free.**
+Free-threaded CPython latches state bits in an object's shared-refcount field
+the first time a *non-owner* thread touches it, and the latch survives after
+the references are released. `probe` walks the structure (read-only, no
+copies, no threads, microseconds per thousand objects) and reads that
+breadcrumb:
+
+```python
+>>> immortalize.probe(graph)   # after workers have been running a while
+{'supported': True, 'objects_sampled': 13966,
+ 'immortal': 0, 'immortal_fraction': 0.0,
+ 'shared_evidence': 13207, 'shared_evidence_fraction': 0.95}
+```
+
+A high `shared_evidence_fraction` on a mortal structure means its refcount
+words are being written from multiple threads — the precondition for the
+contention this package removes. Caveats that matter:
+
+- **Call it from the thread that built the structure.** The probe's own walk
+  references every object it inspects; from any other thread those are
+  foreign references and everything reports (false) shared evidence.
+- **Probe while workers are running.** Subscript/attribute/list-iteration
+  accesses latch permanently, but dict-view iteration only shows evidence
+  while foreign references are still held — probing after workers exit
+  under-reports.
+- Weakrefs also latch the bit (conservative over-report), speed is under a
+  microsecond per object (~70 ms per 100k), and it needs a 64-bit
+  free-threaded build (elsewhere it returns `{'supported': False}`).
+
+**`immortalize_tree(root, strict=True)` — refuse to freeze the unfreezable.**
+A validate-then-commit pre-flight: the tree is walked *without freezing
+anything*, and if it contains objects that are almost always a mistake to
+immortalize — open files, sockets, locks, generators/coroutines, frames,
+tracebacks, or anything defining `__del__` (its finalizer would never run) —
+`UnsafeToImmortalize` is raised listing what was found, and **nothing is
+frozen**. Frames and tracebacks matter most: freezing one pins its entire
+variable graph forever. Costs one extra walk; recommended at freeze points.
+
+**Repeat-call-site leak warning.** The classic misuse is freezing
+per-iteration data in a loop. `immortalize_tree` tracks its call sites and
+emits a `ResourceWarning` once one site has frozen `repeat_call_warning`
+times (default 5; set to `None` to disable):
+
+```
+ResourceWarning: immortalize_tree has now been called 5 times from
+app.py:214 -- immortalization is permanent, so freezing per-iteration data
+leaks its entire object graph every call.
+```
+
+(Like CPython's own unclosed-file warnings, `ResourceWarning` is hidden by
+default filters — visible under `-X dev`, `-W default::ResourceWarning`, or
+pytest.)
+
+**`stats()` — what has been frozen, from where.** Running totals
+(`tree_calls`, `objects_frozen`, per-call-site counts); one lock/counter
+update per freeze call, nothing on any hot path.
+
+What deliberately does **not** exist: a self-benchmark mode. Measuring the
+speedup requires immortalizing a copy of your data, and an immortalized copy
+can never be freed — a diagnostic that leaks is not a diagnostic this package
+will ship. `probe` answers "would it help?" without freezing anything;
+[EVIDENCE.md](EVIDENCE.md) shows how to measure properly with `perf` on a
+workload you control.
+
 ## Why not the official APIs?
 
 Fair question — CPython has adjacent machinery, and none of it covers this
