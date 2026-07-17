@@ -35,14 +35,25 @@ jobs:
       - name: Report interpreter mode
         run: |
           python -c "import sys, immortalize as im; print(sys.version); print('available:', im.available(), 'free_threaded:', im.is_free_threaded())"
-      - name: Assert symbol is exported (Linux)
-        # Guard against the whole suite silently skipping: hosted Linux
-        # CPython builds export _Py_SetImmortal; if that ever changes we want
-        # a red build, not a green no-op.  (Windows/macOS export behaviour is
-        # informational for now -- tests skip gracefully there if absent.)
-        if: runner.os == 'Linux'
+      - name: Assert availability matches the known matrix
+        # Two-way guard: the suite must not silently all-skip where the
+        # symbol should exist, and we want to KNOW when a build starts (or
+        # stops) exporting it.  Measured across GH-hosted Linux/macOS/Windows:
+        # _Py_SetImmortal is ctypes-visible on standard 3.14+ builds and NOT
+        # on 3.12/3.13/3.13t (source-present but unexported pre-3.14).
+        shell: bash
         run: |
-          python -c "import immortalize as im; assert im.available(), 'symbol not exported on this build'"
+          python - <<'EOF'
+          import sys
+          import immortalize as im
+          expected = sys.version_info[:2] >= (3, 14)
+          actual = im.available()
+          print(f"python {sys.version_info[0]}.{sys.version_info[1]} "
+                f"expected_available={expected} actual={actual}")
+          assert actual == expected, (
+              f"availability changed on this build: expected {expected}, "
+              f"got {actual} -- update the matrix note and README")
+          EOF
       - name: Test
         run: python -m pytest tests/ -v
 

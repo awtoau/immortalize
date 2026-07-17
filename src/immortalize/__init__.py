@@ -26,11 +26,12 @@ THIS IS AN EXPERT TOOL.  Read the safety notes before use:
   * The binding uses CPython's exported-but-private `_Py_SetImmortal` symbol
     (the same routine CPython itself runs when it immortalizes objects at
     runtime, e.g. interned strings; `None`/`True`/small ints are born immortal
-    at build time).  It has been present from CPython 3.12 through 3.15 on
-    standard builds, but it is not a public API, and some redistributions
-    (e.g. python-build-standalone) do not export it.  `available()` reports
-    whether the running interpreter exposes it; everything degrades to a no-op
-    when it does not.
+    at build time).  It is not a public API.  Measured across standard
+    Linux/macOS/Windows builds it is ctypes-visible on 3.14+ (including
+    3.14t/3.15t) but NOT on 3.12/3.13/3.13t (unexported before 3.14), and
+    some redistributions (e.g. python-build-standalone) never export it.
+    `available()` reports whether the running interpreter exposes it;
+    everything degrades to a no-op when it does not.
 
 Typical usage -- the freeze-point idiom::
 

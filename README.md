@@ -51,12 +51,16 @@ load-bearing:
    `ctypes` call to `_Py_SetImmortal` — the same routine CPython itself runs
    when it immortalizes objects at runtime (interned strings, deferred
    objects; `None`/`True`/small ints are *born* immortal at build time and
-   never pass through it). The symbol has been present from CPython 3.12
-   through 3.15 including all free-threaded builds we tested, but it is
-   **not a public API** and could change in a future CPython — and not every
-   distribution exports it (details below). `immortalize.available()` tells
-   you whether the running interpreter exposes it; when it doesn't, every
-   call in this package degrades to a documented no-op rather than an error.
+   never pass through it). It is **not a public API** and could change in a
+   future CPython. In practice — measured in CI across GitHub's standard
+   Linux/macOS/Windows builds — the symbol is ctypes-visible on **3.14 and
+   later** (including 3.14t/3.15t) and NOT on 3.12/3.13/**3.13t** (it existed
+   in source but wasn't exported before 3.14). So the first free-threaded
+   release, 3.13t, gets the graceful no-op: **use 3.14t+ for the fast path.**
+   Some redistributions (e.g. `python-build-standalone`, which `uv`
+   installs) don't export it on any version. `immortalize.available()` tells
+   you the truth at runtime; when it's `False`, every call in this package
+   degrades to a documented no-op rather than an error.
 
 5. **`immortalize_tree` walks what's reachable — audit your roots.** The
    deep walker follows dict keys/values, list/tuple/set/frozenset members,
@@ -278,13 +282,14 @@ use case. Researched against CPython source and verified empirically:
 - **`_Py_SetImmortal`** (what this package calls): unconditional, complete
   (sets the thread-id word, both refcount fields, and untracks from the GC).
   It is what CPython itself runs on its own immortals. The trade-off is the
-  private-API caveat above, plus one practical one: **symbol visibility
-  varies by distribution**. Standard python.org, Linux-distro, and
-  free-threaded builds we tested (3.14, 3.14t, 3.15t) export it; some
-  standalone redistributions (e.g. `python-build-standalone`, which `uv`
-  installs) do not expose it to `ctypes`. `available()` is the runtime
-  truth, and everything no-ops cleanly when it's `False` — your code runs
-  identically, just without the optimization.
+  private-API caveat above, plus symbol visibility: measured across GitHub's
+  standard Linux/macOS/Windows builds, it is ctypes-visible on **3.14+**
+  (including 3.14t/3.15t) and not on 3.12/3.13/3.13t; standalone
+  redistributions (e.g. `python-build-standalone`, which `uv` installs)
+  don't export it at all. CI asserts this exact matrix so we find out the
+  moment a build changes. `available()` is the runtime truth, and everything
+  no-ops cleanly when it's `False` — your code runs identically, just
+  without the optimization.
 
 Prior art: NumPy hit exactly this contention on two shared capsule objects
 (~20% multithreaded regression) — that discussion produced
