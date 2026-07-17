@@ -70,6 +70,13 @@ load-bearing:
    confused by immortal objects (CPython's own test suite special-cases
    them).
 
+> **Every mechanistic claim below is empirically proven** — ctypes header
+> inspection for the refcount structure, `perf stat` snoop counters and
+> `perf c2c` for the cache-line story (the #1 contended cache line in the
+> benchmark *is* the shared dict object; immortalizing drops locked accesses
+> on shared lines from 19,682 to 0). See [EVIDENCE.md](EVIDENCE.md) for the
+> numbers and `bench/` for the reproduction scripts.
+
 ## The problem this solves
 
 On free-threaded CPython (PEP 703, `python3.13t`+), reference counting is
